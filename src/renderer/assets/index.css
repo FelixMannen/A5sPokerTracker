@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+@keyframes tooltipContentIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @keyframes modalIn {
   from {
     opacity: 0;

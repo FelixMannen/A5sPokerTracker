@@ -32,71 +32,92 @@ function buildChartData(sessions: Session[]): ChartPoint[] {
   })
 }
 
-// Returns null (show all dots) or a Set of indices that get a landmark dot
 function computeDotSet(data: ChartPoint[]): Set<number> | null {
   if (data.length <= SPARSE_THRESHOLD) return null
-
   const n = Math.max(2, Math.round(data.length * 0.05))
-
   const wins = [...data]
     .filter((d) => d.sessionProfit > 0)
     .sort((a, b) => b.sessionProfit - a.sessionProfit)
     .slice(0, n)
-
   return new Set(wins.map((d) => d.index))
 }
 
-// ------- Tooltip (needs currency — defined as a component so it can call the hook) -------
+// ------- Hover bridge: captures Recharts hover state without rendering anything -------
 
-function Row({
+interface HoverBridgeProps {
+  active?: boolean
+  payload?: any[]
+  onHover: (point: ChartPoint | null) => void
+}
+
+function HoverBridge({ active, payload, onHover }: HoverBridgeProps) {
+  const isActive = !!active
+  const point: ChartPoint | null = isActive && payload?.length ? payload[0].payload : null
+  const pointIndex = point?.index ?? null
+
+  useEffect(() => {
+    onHover(isActive ? point : null)
+  }, [isActive, pointIndex]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return null
+}
+
+// ------- Fixed info panel (top-left of chart) -------
+
+function InfoRow({
   label,
   value,
-  color = 'text-gray-300',
-  mono = true
+  color = 'text-gray-300'
 }: {
   label: string
   value: string
   color?: string
-  mono?: boolean
 }) {
   return (
-    <div className="flex justify-between gap-6">
-      <span className="text-gray-500">{label}</span>
-      <span className={`${color} ${mono ? 'font-mono' : ''}`}>{value}</span>
+    <div className="flex justify-between gap-8">
+      <span className="text-gray-600 text-xs">{label}</span>
+      <span className={`font-mono text-xs tabular-nums ${color}`}>{value}</span>
     </div>
   )
 }
 
-function ChartTooltip({ active, payload }: { active?: boolean; payload?: any[] }) {
+function InfoPanel({ point, dimmed }: { point: ChartPoint; dimmed: boolean }) {
   const { format, formatAbs } = useCurrency()
-  if (!active || !payload?.length) return null
-  const point: ChartPoint = payload[0].payload
   const { session, sessionProfit, cumulative } = point
 
   return (
-    <div className="rounded-xl border border-white/10 bg-[#1c1c1c] p-4 shadow-2xl text-sm">
-      {session.tournament_name && (
-        <p className="mb-1 font-semibold text-white">{session.tournament_name}</p>
-      )}
-      <p className="mb-3 text-xs text-gray-500">{session.date}</p>
-      <div className="space-y-1.5 font-mono">
-        <Row label="Buy-in" value={formatAbs(session.buy_in)} />
-        <Row label="Cashout" value={formatAbs(session.cashout)} />
-        {session.type && <Row label="Type" value={session.type} mono={false} />}
-        {session.registration_time && (
-          <Row label="Reg" value={session.registration_time} mono={false} />
-        )}
-        <div className="my-1.5 border-t border-white/10" />
-        <Row
-          label="Result"
-          value={format(sessionProfit)}
-          color={sessionProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}
-        />
-        <Row
-          label="Running"
-          value={format(cumulative)}
-          color={cumulative >= 0 ? 'text-emerald-400' : 'text-red-400'}
-        />
+    <div
+      className="absolute left-3 top-3 z-10 w-52 rounded-xl border border-white/5 bg-[#111]/90 p-3 backdrop-blur-sm pointer-events-none"
+      style={{ opacity: dimmed ? 0.35 : 1, transition: 'opacity 0.25s ease' }}
+    >
+      {/* Content fades in when point changes */}
+      <div key={point.index} style={{ animation: 'tooltipContentIn 0.15s ease-out' }}>
+        <div className="mb-2">
+          <p className="text-xs font-semibold text-gray-200 leading-tight truncate">
+            {session.tournament_name ?? `Tournament #${point.index}`}
+          </p>
+          <p className="text-[10px] text-gray-600 mt-0.5">{session.date}</p>
+        </div>
+
+        <div className="space-y-1 mb-2">
+          <InfoRow label="Buy-in" value={formatAbs(session.buy_in)} />
+          <InfoRow label="Cashout" value={formatAbs(session.cashout)} />
+          {session.type && <InfoRow label="Type" value={session.type} />}
+          {session.registration_time && <InfoRow label="Reg" value={session.registration_time} />}
+        </div>
+
+        <div className="border-t border-white/5 pt-2 space-y-1">
+          <InfoRow
+            label="Result"
+            value={format(sessionProfit)}
+            color={sessionProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}
+          />
+          <InfoRow
+            label="Running"
+            value={format(cumulative)}
+            color={cumulative >= 0 ? 'text-emerald-400' : 'text-red-400'}
+          />
+        </div>
       </div>
     </div>
   )
@@ -104,29 +125,11 @@ function ChartTooltip({ active, payload }: { active?: boolean; payload?: any[] }
 
 // ------- Dot renderers -------
 
-function renderActiveDot(props: any) {
-  const { cx, cy, payload } = props
-  const isWin = payload.sessionProfit >= 0
-  return (
-    <circle
-      key={`adot-${payload.index}`}
-      cx={cx}
-      cy={cy}
-      r={7}
-      fill={isWin ? '#00d46a' : '#ff4757'}
-      stroke="#fff"
-      strokeWidth={2}
-      style={{ filter: `drop-shadow(0 0 8px ${isWin ? '#00ff88' : '#ff4757'})` }}
-    />
-  )
-}
-
 function makeDotRenderer(dotSet: Set<number> | null) {
   return function renderDot(props: any) {
     const { cx, cy, payload } = props
     const idx: number = payload.index
 
-    // Sparse mode: hide non-landmark dots with a zero-radius invisible circle
     if (dotSet !== null && !dotSet.has(idx)) {
       return <circle key={`dot-hidden-${idx}`} cx={cx} cy={cy} r={0} fill="none" />
     }
@@ -152,6 +155,23 @@ function makeDotRenderer(dotSet: Set<number> | null) {
   }
 }
 
+function renderActiveDot(props: any) {
+  const { cx, cy, payload } = props
+  const isWin = payload.sessionProfit >= 0
+  return (
+    <circle
+      key={`adot-${payload.index}`}
+      cx={cx}
+      cy={cy}
+      r={7}
+      fill={isWin ? '#00d46a' : '#ff4757'}
+      stroke="#fff"
+      strokeWidth={2}
+      style={{ filter: `drop-shadow(0 0 8px ${isWin ? '#00ff88' : '#ff4757'})` }}
+    />
+  )
+}
+
 // ------- Empty state -------
 
 function EmptyState() {
@@ -169,16 +189,46 @@ function EmptyState() {
 export default function ProfitChart({ sessions }: { sessions: Session[] }) {
   const { format, currency } = useCurrency()
 
-  // Chart data — recomputed only when sessions change
   const data = useMemo(() => buildChartData(sessions), [sessions])
-
-  // Dot set — recomputed only when data changes, never on currency changes
   const dotSet = useMemo(() => computeDotSet(data), [data])
-
-  // Stable dot renderer — only recreated when dotSet changes
   const renderDot = useCallback(makeDotRenderer(dotSet), [dotSet])
 
-  // Y-axis domain — recomputed only when data changes
+  // Info panel state
+  const [displayPoint, setDisplayPoint] = useState<ChartPoint | null>(null)
+  const [isHovering, setIsHovering] = useState(false)
+  const displayPointRef = useRef<ChartPoint | null>(null)
+  const isHoveringRef = useRef(false)
+
+  // Pre-populate with the most recent tournament on load / data change
+  useEffect(() => {
+    if (data.length) {
+      const last = data[data.length - 1]
+      if (!displayPointRef.current) {
+        displayPointRef.current = last
+        setDisplayPoint(last)
+      }
+    }
+  }, [data])
+
+  const handleHover = useCallback((point: ChartPoint | null) => {
+    if (point) {
+      if (point.index !== displayPointRef.current?.index) {
+        displayPointRef.current = point
+        setDisplayPoint(point)
+      }
+      if (!isHoveringRef.current) {
+        isHoveringRef.current = true
+        setIsHovering(true)
+      }
+    } else {
+      if (isHoveringRef.current) {
+        isHoveringRef.current = false
+        setIsHovering(false)
+      }
+    }
+  }, [])
+
+  // Y-axis domain
   const { yMin, yMax, zeroPercent } = useMemo(() => {
     if (!data.length) return { yMin: -100, yMax: 100, zeroPercent: 50 }
     const values = data.map((d) => d.cumulative)
@@ -191,8 +241,7 @@ export default function ProfitChart({ sessions }: { sessions: Session[] }) {
     return { yMin, yMax, zeroPercent }
   }, [data])
 
-  // Animation: only play on initial mount or when tournament count changes.
-  // Disabled after the sweep completes so currency toggles don't re-animate.
+  // Animation: only on data length change, disabled after sweep so currency changes don't re-animate
   const [animate, setAnimate] = useState(true)
   const prevLen = useRef(data.length)
   useEffect(() => {
@@ -204,8 +253,7 @@ export default function ProfitChart({ sessions }: { sessions: Session[] }) {
     return () => clearTimeout(t)
   }, [data.length])
 
-  // Y-axis formatter — stable ref so the callback identity doesn't change on currency toggle,
-  // but always reads the latest format function
+  // Stable Y-axis formatter via ref — doesn't change identity on currency toggle
   const formatRef = useRef(format)
   formatRef.current = format
   const tickFormatter = useCallback((v: number) => formatRef.current(v), [])
@@ -216,59 +264,68 @@ export default function ProfitChart({ sessions }: { sessions: Session[] }) {
   const yAxisWidth = currency === 'NOK' ? 88 : 72
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={data} margin={{ top: 20, right: 40, left: 10, bottom: 30 }}>
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#00ff88" stopOpacity={0.0} />
-            <stop offset={`${Math.max(0, zeroPercent - 15)}%`} stopColor="#00ff88" stopOpacity={0.18} />
-            <stop offset={`${zeroPercent}%`} stopColor="#00ff88" stopOpacity={0.06} />
-            <stop offset={`${zeroPercent}%`} stopColor="#ff4757" stopOpacity={0.06} />
-            <stop offset={`${Math.min(100, zeroPercent + 15)}%`} stopColor="#ff4757" stopOpacity={0.18} />
-            <stop offset="100%" stopColor="#ff4757" stopOpacity={0.0} />
-          </linearGradient>
-        </defs>
+    <div className="relative h-full w-full">
+      {displayPoint && (
+        <InfoPanel point={displayPoint} dimmed={!isHovering} />
+      )}
 
-        <CartesianGrid strokeDasharray="4 4" stroke="rgba(255,255,255,0.04)" vertical={false} />
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart
+          data={data}
+          margin={{ top: 20, right: 40, left: 10, bottom: 30 }}
+        >
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#00ff88" stopOpacity={0.0} />
+              <stop offset={`${Math.max(0, zeroPercent - 15)}%`} stopColor="#00ff88" stopOpacity={0.18} />
+              <stop offset={`${zeroPercent}%`} stopColor="#00ff88" stopOpacity={0.06} />
+              <stop offset={`${zeroPercent}%`} stopColor="#ff4757" stopOpacity={0.06} />
+              <stop offset={`${Math.min(100, zeroPercent + 15)}%`} stopColor="#ff4757" stopOpacity={0.18} />
+              <stop offset="100%" stopColor="#ff4757" stopOpacity={0.0} />
+            </linearGradient>
+          </defs>
 
-        <XAxis
-          dataKey="index"
-          tick={{ fill: '#4b5563', fontSize: 11, fontFamily: 'monospace' }}
-          tickLine={false}
-          axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
-          label={{ value: 'Tournament #', position: 'insideBottom', offset: -16, fill: '#374151', fontSize: 11 }}
-        />
+          <CartesianGrid strokeDasharray="4 4" stroke="rgba(255,255,255,0.04)" vertical={false} />
 
-        <YAxis
-          domain={[yMin, yMax]}
-          tick={{ fill: '#4b5563', fontSize: 11, fontFamily: 'monospace' }}
-          tickLine={false}
-          axisLine={false}
-          tickFormatter={tickFormatter}
-          width={yAxisWidth}
-        />
+          <XAxis
+            dataKey="index"
+            tick={{ fill: '#4b5563', fontSize: 11, fontFamily: 'monospace' }}
+            tickLine={false}
+            axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
+            label={{ value: 'Tournament #', position: 'insideBottom', offset: -16, fill: '#374151', fontSize: 11 }}
+          />
 
-        <Tooltip
-          content={<ChartTooltip />}
-          cursor={{ stroke: 'rgba(255,255,255,0.08)', strokeWidth: 1, strokeDasharray: '3 3' }}
-        />
+          <YAxis
+            domain={[yMin, yMax]}
+            tick={{ fill: '#4b5563', fontSize: 11, fontFamily: 'monospace' }}
+            tickLine={false}
+            axisLine={false}
+            tickFormatter={tickFormatter}
+            width={yAxisWidth}
+          />
 
-        <ReferenceLine y={0} stroke="rgba(255,255,255,0.18)" strokeDasharray="5 5" strokeWidth={1} />
+          <Tooltip
+            cursor={{ stroke: 'rgba(255,255,255,0.08)', strokeWidth: 1, strokeDasharray: '3 3' }}
+            content={<HoverBridge onHover={handleHover} />}
+          />
 
-        <Area
-          type="monotone"
-          dataKey="cumulative"
-          stroke="#00ff88"
-          strokeWidth={2.5}
-          fill={`url(#${gradientId})`}
-          dot={renderDot}
-          activeDot={renderActiveDot}
-          isAnimationActive={animate}
-          animationDuration={ANIMATION_MS}
-          animationEasing="ease-out"
-          style={{ filter: 'drop-shadow(0 0 6px rgba(0,255,136,0.25))' }}
-        />
-      </AreaChart>
-    </ResponsiveContainer>
+          <ReferenceLine y={0} stroke="rgba(255,255,255,0.18)" strokeDasharray="5 5" strokeWidth={1} />
+
+          <Area
+            type="monotone"
+            dataKey="cumulative"
+            stroke="#00ff88"
+            strokeWidth={2.5}
+            fill={`url(#${gradientId})`}
+            dot={renderDot}
+            activeDot={renderActiveDot}
+            isAnimationActive={animate}
+            animationDuration={ANIMATION_MS}
+            animationEasing="ease-out"
+            style={{ filter: 'drop-shadow(0 0 6px rgba(0,255,136,0.25))' }}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   )
 }
