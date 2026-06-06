@@ -1,4 +1,11 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
+import type { SessionAPI } from '../renderer/types'
 
-// Session API will be wired up here as IPC handlers are added
-contextBridge.exposeInMainWorld('api', {})
+const api: SessionAPI = {
+  createSession: (data) => ipcRenderer.invoke('session:create', data),
+  getAllSessions: () => ipcRenderer.invoke('session:get-all'),
+  updateSession: (id, data) => ipcRenderer.invoke('session:update', id, data),
+  deleteSession: (id) => ipcRenderer.invoke('session:delete', id)
+}
+
+contextBridge.exposeInMainWorld('api', api)

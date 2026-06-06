@@ -1,7 +1,18 @@
 import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
+import Database from 'better-sqlite3'
+import { initSchema } from './database/schema'
+import { registerHandlers } from './ipc/handlers'
 
-function createWindow(): void {
+function createDatabase(): Database.Database {
+  const dbPath = join(app.getPath('userData'), 'sessions.db')
+  const db = new Database(dbPath)
+  db.pragma('journal_mode = WAL')
+  initSchema(db)
+  return db
+}
+
+function createWindow(db: Database.Database): void {
   const mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -10,6 +21,8 @@ function createWindow(): void {
       sandbox: false
     }
   })
+
+  registerHandlers(db)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -25,9 +38,10 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  createWindow()
+  const db = createDatabase()
+  createWindow(db)
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(db)
   })
 })
 
