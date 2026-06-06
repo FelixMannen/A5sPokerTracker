@@ -4,45 +4,58 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-A5s Poker Tracker — Electron desktop app for logging and analyzing poker session results.
+A5s Poker Tracker — Electron desktop app for logging MTT (multi-table tournament) results.
 
 ## Commands
 
 ```bash
-npm run dev          # start Electron app in development mode (hot reload)
+npm run dev          # start app in development mode
 npm run build        # compile TypeScript and build distributable
-npm run lint         # run ESLint across all source files
-npm run typecheck    # run tsc without emitting (type-check only)
+npm run typecheck    # type-check without emitting
+npm run rebuild      # recompile better-sqlite3 for Electron (run after fresh install)
 ```
 
-## Architecture
+After a fresh `npm install`, always run `npm run rebuild` before `npm run dev`.
 
-Electron splits execution across three environments. Each has strict constraints:
+## Process architecture
 
-- **Main process** (`src/main/`) — Node.js. Owns the SQLite database, file system, and native APIs. Never import renderer code here.
-- **Preload script** (`src/preload/index.ts`) — Isolated Node context. The only bridge between main and renderer. Uses `contextBridge.exposeInMainWorld` to expose a typed `window.api` object. Keep this minimal — only expose what the renderer needs.
-- **Renderer process** (`src/renderer/`) — Browser environment. No direct Node or SQLite access. All data flows through `window.api` (the preload bridge). React + Tailwind live here.
+Three isolated environments — never cross these boundaries:
 
-### Data flow
+| Process | Location | Can access |
+|---|---|---|
+| Main | `src/main/` | SQLite, Node.js, native APIs |
+| Preload | `src/preload/index.ts` | contextBridge only — no DB, no React |
+| Renderer | `src/renderer/` | React, Tailwind, `window.api` only |
 
-```
-Renderer (React) → window.api.someMethod() → IPC channel → ipcMain.handle() → queries.ts → SQLite
-```
+Data flow: `React → window.api.x() → IPC → ipcMain.handle() → queries.ts → SQLite`
 
-`better-sqlite3` is synchronous and must only ever run in the main process. Do not attempt to import it in the renderer or preload.
+`better-sqlite3` is synchronous and must only run in the main process.
 
-### IPC conventions
+## IPC conventions
 
-- Channel names live in `src/main/ipc/handlers.ts` — use `kebab-case` strings (e.g. `session:create`).
-- All IPC handlers return plain serializable objects (no class instances, no Dates — use ISO strings).
-- The preload wraps each channel in a typed function so the renderer never calls `ipcRenderer.invoke` directly.
+- Channel names in `src/main/ipc/handlers.ts`, format: `session:create`, `session:get-all`
+- Handlers return plain serializable objects — no class instances, use ISO strings for dates
+- Renderer never calls `ipcRenderer` directly — always via `window.api`
 
-### Key types
+## Data model
 
-Shared TypeScript types are in `src/renderer/types/index.ts`. The `Session` type is the central data shape — the DB schema, IPC payloads, and UI components all reference it.
+**sessions table** — central type defined in `src/renderer/types/index.ts`:
 
-## Build tooling
+| Column | Type | Notes |
+|---|---|---|
+| id | INTEGER PK | auto-increment |
+| tournament_name | TEXT | optional |
+| date | TEXT | ISO date string, defaults to today |
+| buy_in | REAL | required |
+| cashout | REAL | required, 0 if busted |
+| type | TEXT | optional — e.g. PKO, Freezeout, Satellite |
+| registration_time | TEXT | optional — Early, Medium, or Late |
 
-electron-vite manages the three-process build. Config is in `electron.vite.config.ts`. Renderer uses Vite + React plugin; main and preload use esbuild via electron-vite's built-in handling.
+Profit = cashout − buy_in (computed in queries or UI, not stored).
 
-`better-sqlite3` is a native module and requires a rebuild step for the target Electron version — this is handled automatically via the `electron-rebuild` script in `package.json`.
+## Build notes
+
+- **electron-vite** manages the three-process build (`electron.vite.config.ts`)
+- **better-sqlite3** requires native compilation — `npm run rebuild` uses `@electron/rebuild`
+- A `patch-package` patch in `patches/` fixes VS 2026 toolset detection in `@electron/node-gyp` — applied automatically via `postinstall`
+- Node 22 LTS required (managed via fnm) — Node 25 has no prebuilt binaries for native modules
