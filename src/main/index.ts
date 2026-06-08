@@ -3,15 +3,14 @@ import { join } from 'path'
 import Database from 'better-sqlite3'
 import { initSchema } from './database/schema'
 import { registerHandlers } from './ipc/handlers'
-import { seedTestDatabase } from './database/seed'
+import { importFromJsonIfPresent } from './database/importJson'
 
 function createDatabase(): Database.Database {
-  const dbFile = app.isPackaged ? 'sessions.db' : 'sessions_test.db'
-  const dbPath = join(app.getPath('userData'), dbFile)
+  const dbPath = join(app.getPath('userData'), 'sessions.db')
   const db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
   initSchema(db)
-  if (!app.isPackaged) seedTestDatabase(db)
+  importFromJsonIfPresent(db)
   return db
 }
 

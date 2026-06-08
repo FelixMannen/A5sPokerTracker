@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState, useEffect, useRef } from 'react'
+import { useMemo, useCallback, useState, useEffect, useLayoutEffect, useRef } from 'react'
 import {
   AreaChart,
   Area,
@@ -21,6 +21,16 @@ interface ChartPoint {
 
 const SPARSE_THRESHOLD = 50
 const ANIMATION_MS = 1000
+
+// Must match the AreaChart's `margin` prop below — used to derive plot-area bounds
+const CHART_MARGIN = { top: 20, right: 40, left: 10, bottom: 30 }
+const PANEL_EDGE_MARGIN = 12
+const PANEL_GAP_BUFFER = 24
+
+interface PanelPosition {
+  left: number
+  top: number
+}
 
 function buildChartData(sessions: Session[]): ChartPoint[] {
   const chrono = [...sessions].reverse()
@@ -62,7 +72,7 @@ function HoverBridge({ active, payload, onHover }: HoverBridgeProps) {
   return null
 }
 
-// ------- Fixed info panel (top-left of chart) -------
+// ------- Info panel: positioned in the empty space left of the chart line -------
 
 function InfoRow({
   label,
@@ -81,14 +91,30 @@ function InfoRow({
   )
 }
 
-function InfoPanel({ point, dimmed }: { point: ChartPoint; dimmed: boolean }) {
+function InfoPanel({
+  point,
+  dimmed,
+  position,
+  panelRef
+}: {
+  point: ChartPoint
+  dimmed: boolean
+  position: PanelPosition | null
+  panelRef: React.RefObject<HTMLDivElement>
+}) {
   const { format, formatAbs } = useCurrency()
   const { session, sessionProfit, cumulative } = point
 
   return (
     <div
-      className="absolute left-3 top-3 z-10 w-52 rounded-xl border border-white/5 bg-[#111]/90 p-3 backdrop-blur-sm pointer-events-none"
-      style={{ opacity: dimmed ? 0.35 : 1, transition: 'opacity 0.25s ease' }}
+      ref={panelRef}
+      className="absolute z-10 w-52 rounded-xl border border-white/5 bg-[#111]/90 p-3 backdrop-blur-sm pointer-events-none"
+      style={{
+        left: position?.left ?? 0,
+        top: position?.top ?? 0,
+        opacity: position ? (dimmed ? 0.35 : 1) : 0,
+        transition: 'opacity 0.25s ease, left 0.2s ease, top 0.2s ease'
+      }}
     >
       {/* Content fades in when point changes */}
       <div key={point.index} style={{ animation: 'tooltipContentIn 0.15s ease-out' }}>
@@ -129,9 +155,13 @@ function makeDotRenderer(dotSet: Set<number> | null) {
   return function renderDot(props: any) {
     const { cx, cy, payload } = props
     const idx: number = payload.index
+    // Tag every point (and specifically the leftmost) so the line's rendered pixel
+    // path can be measured — used to place the info panel clear of the line
+    const dotAttrs: Record<string, string> = { 'data-chart-dot': 'true' }
+    if (idx === 1) dotAttrs['data-first-dot'] = 'true'
 
     if (dotSet !== null && !dotSet.has(idx)) {
-      return <circle key={`dot-hidden-${idx}`} cx={cx} cy={cy} r={0} fill="none" />
+      return <circle key={`dot-hidden-${idx}`} {...dotAttrs} cx={cx} cy={cy} r={0} fill="none" />
     }
 
     const isWin = payload.sessionProfit >= 0
@@ -143,6 +173,7 @@ function makeDotRenderer(dotSet: Set<number> | null) {
     return (
       <circle
         key={`dot-${idx}`}
+        {...dotAttrs}
         cx={cx}
         cy={cy}
         r={r}
@@ -241,6 +272,94 @@ export default function ProfitChart({ sessions }: { sessions: Session[] }) {
     return { yMin, yMax, zeroPercent }
   }, [data])
 
+  // Info panel position: measured from the rendered chart — center it in the empty
+  // gap between the Y-axis labels and where the line actually starts (the leftmost
+  // dot, tagged with data-first-dot). Falls back to the plot area's top-left corner
+  // (clear of both the labels and the line) when that gap is too narrow for the panel.
+  const chartWrapperRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [panelPosition, setPanelPosition] = useState<PanelPosition | null>(null)
+
+  const recomputePanelPosition = useCallback(() => {
+    const wrapper = chartWrapperRef.current
+    const panel = panelRef.current
+    if (!wrapper || !panel) return
+
+    const wrapperRect = wrapper.getBoundingClientRect()
+    if (wrapperRect.width === 0 || wrapperRect.height === 0) return
+    const panelRect = panel.getBoundingClientRect()
+
+    let labelsRight = CHART_MARGIN.left
+    wrapper.querySelectorAll('.recharts-yAxis text').forEach((el) => {
+      const r = el.getBoundingClientRect()
+      labelsRight = Math.max(labelsRight, r.right - wrapperRect.left)
+    })
+
+    const firstDot = wrapper.querySelector('[data-first-dot="true"]')
+    const lineStartX = firstDot ? firstDot.getBoundingClientRect().left - wrapperRect.left : null
+
+    const plotTop = CHART_MARGIN.top
+    const plotBottom = wrapperRect.height - CHART_MARGIN.bottom
+    const centeredTop = plotTop + (plotBottom - plotTop - panelRect.height) / 2
+
+    if (lineStartX !== null) {
+      const gapWidth = lineStartX - labelsRight
+      if (gapWidth >= panelRect.width + PANEL_GAP_BUFFER) {
+        setPanelPosition({
+          left: labelsRight + (gapWidth - panelRect.width) / 2,
+          top: centeredTop
+        })
+        return
+      }
+    }
+
+    // Fallback: the gap is too narrow, so the panel must sit over the plot area —
+    // pick whichever vertical edge (top or bottom) the line stays clearest of across
+    // the panel's horizontal span, using the actual rendered dot positions
+    const fallbackLeft = labelsRight + PANEL_EDGE_MARGIN
+    const spanRight = fallbackLeft + panelRect.width
+
+    const dots: { x: number; y: number }[] = []
+    wrapper.querySelectorAll('[data-chart-dot="true"]').forEach((el) => {
+      const r = el.getBoundingClientRect()
+      dots.push({ x: r.left + r.width / 2 - wrapperRect.left, y: r.top + r.height / 2 - wrapperRect.top })
+    })
+    const dotsInSpan = dots.filter((d) => d.x >= fallbackLeft && d.x <= spanRight)
+
+    let fallbackTop = plotTop + PANEL_EDGE_MARGIN
+    if (dotsInSpan.length) {
+      const topCandidateBottom = plotTop + PANEL_EDGE_MARGIN + panelRect.height
+      const bottomCandidateTop = plotBottom - PANEL_EDGE_MARGIN - panelRect.height
+
+      const minDistanceTo = (edgeY: number, fromBelow: boolean) =>
+        Math.min(...dotsInSpan.map((d) => (fromBelow ? d.y - edgeY : edgeY - d.y)))
+
+      const topClearance = minDistanceTo(topCandidateBottom, true)
+      const bottomClearance = minDistanceTo(bottomCandidateTop, false)
+
+      fallbackTop = bottomClearance > topClearance
+        ? bottomCandidateTop
+        : plotTop + PANEL_EDGE_MARGIN
+    }
+
+    setPanelPosition({ left: fallbackLeft, top: fallbackTop })
+  }, [])
+
+  // Recompute whenever the chart's layout could have changed
+  useLayoutEffect(() => {
+    recomputePanelPosition()
+    const raf = requestAnimationFrame(recomputePanelPosition)
+    return () => cancelAnimationFrame(raf)
+  }, [data, currency, displayPoint, recomputePanelPosition])
+
+  useEffect(() => {
+    const wrapper = chartWrapperRef.current
+    if (!wrapper) return
+    const observer = new ResizeObserver(() => recomputePanelPosition())
+    observer.observe(wrapper)
+    return () => observer.disconnect()
+  }, [recomputePanelPosition])
+
   // Animation: only on data length change, disabled after sweep so currency changes don't re-animate
   const [animate, setAnimate] = useState(true)
   const prevLen = useRef(data.length)
@@ -249,9 +368,12 @@ export default function ProfitChart({ sessions }: { sessions: Session[] }) {
       prevLen.current = data.length
       setAnimate(true)
     }
-    const t = setTimeout(() => setAnimate(false), ANIMATION_MS + 100)
+    const t = setTimeout(() => {
+      setAnimate(false)
+      recomputePanelPosition()
+    }, ANIMATION_MS + 100)
     return () => clearTimeout(t)
-  }, [data.length])
+  }, [data.length, recomputePanelPosition])
 
   // Stable Y-axis formatter via ref — doesn't change identity on currency toggle
   const formatRef = useRef(format)
@@ -264,16 +386,13 @@ export default function ProfitChart({ sessions }: { sessions: Session[] }) {
   const yAxisWidth = currency === 'NOK' ? 88 : 72
 
   return (
-    <div className="relative h-full w-full">
+    <div ref={chartWrapperRef} className="relative h-full w-full">
       {displayPoint && (
-        <InfoPanel point={displayPoint} dimmed={!isHovering} />
+        <InfoPanel point={displayPoint} dimmed={!isHovering} position={panelPosition} panelRef={panelRef} />
       )}
 
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart
-          data={data}
-          margin={{ top: 20, right: 40, left: 10, bottom: 30 }}
-        >
+        <AreaChart data={data} margin={CHART_MARGIN}>
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#00ff88" stopOpacity={0.0} />

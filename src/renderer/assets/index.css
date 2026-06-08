@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+*:focus {
+  outline: none;
+}
+
 @keyframes tooltipContentIn {
   from {
     opacity: 0;

@@ -1,11 +1,13 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import type { NewSession, RegistrationTime } from '../../types'
 import { todayISO } from '../../utils/format'
 import { useCurrency } from '../../context/CurrencyContext'
+import TournamentNameInput from '../TournamentNameInput'
 
 interface Props {
   onSubmit: (data: NewSession) => Promise<void>
   onClose: () => void
+  tournamentNames: string[]
 }
 
 const TOURNAMENT_TYPES = ['PKO', 'Freezeout', 'Satellite', 'Bounty', 'Mystery Bounty', 'Hyper', 'Turbo', 'Other']
@@ -25,8 +27,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const inputClass =
   'w-full rounded-lg bg-[#1a1a1a] border border-white/10 px-3 py-2.5 text-sm text-gray-100 placeholder-gray-600 outline-none transition focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30'
 
-export default function LogTournamentModal({ onSubmit, onClose }: Props) {
+export default function LogTournamentModal({ onSubmit, onClose, tournamentNames }: Props) {
   const { format } = useCurrency()
+
+  // Form fields
   const [name, setName] = useState('')
   const [date, setDate] = useState(todayISO())
   const [buyIn, setBuyIn] = useState('')
@@ -35,13 +39,9 @@ export default function LogTournamentModal({ onSubmit, onClose }: Props) {
   const [regTime, setRegTime] = useState<RegistrationTime | ''>('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
-  const firstInputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    firstInputRef.current?.focus()
-  }, [])
-
-  // close on Escape
+  // Escape closes the modal. The name input swallows Escape (stopPropagation) while
+  // its dropdown is open, so the first press closes the dropdown, the next the modal.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -98,13 +98,15 @@ export default function LogTournamentModal({ onSubmit, onClose }: Props) {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Tournament name with autocomplete */}
           <Field label="Tournament Name">
-            <input
-              ref={firstInputRef}
+            <TournamentNameInput
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={setName}
+              names={tournamentNames}
+              inputClass={inputClass}
+              autoFocus
               placeholder="e.g. Sunday Million"
-              className={inputClass}
             />
           </Field>
 

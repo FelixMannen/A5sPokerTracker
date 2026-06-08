@@ -31,5 +31,5 @@ export function useSessions() {
     [fetch]
   )
 
-  return { sessions, loading, addSession, removeSession }
+  return { sessions, loading, addSession, removeSession, refetch: fetch }
 }
